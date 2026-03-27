@@ -1,0 +1,5 @@
+{
+  "name": "Lumina Library Management System",
+  "description": "A sophisticated web-based library management system featuring book tracking, member management, and real-time borrowing status.",
+  "requestFramePermissions": []
+}
