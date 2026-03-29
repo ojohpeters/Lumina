@@ -24,7 +24,9 @@ const connectDB = async () => {
   if (mongoose.connection.readyState >= 1) return;
   console.log("Connecting to MongoDB...");
   try {
-    await mongoose.connect(MONGODB_URI);
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000, // 5s timeout
+    });
     console.log("Connected to MongoDB successfully");
   } catch (err) {
     console.error("MongoDB connection error:", err);
@@ -278,10 +280,14 @@ app.post("/api/auth/register", async (req, res) => {
   app.get("/api/books", async (req, res) => {
     try {
       let books = await Book.find().populate("borrowedBy", "name email");
+      // Only seed if empty and not in a recursive call
       if (books.length === 0 && process.env.VERCEL) {
-        console.log("[API] No books found on Vercel. Triggering automatic seeding...");
-        await seedData();
-        books = await Book.find().populate("borrowedBy", "name email");
+        const userCount = await User.countDocuments();
+        if (userCount === 0) {
+          console.log("[API] No users found. Triggering automatic seeding...");
+          await seedData();
+          books = await Book.find().populate("borrowedBy", "name email");
+        }
       }
       res.json(books);
     } catch (err) {
