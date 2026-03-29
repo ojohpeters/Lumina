@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import mongoose from "mongoose";
 import cookieParser from "cookie-parser";
@@ -173,29 +172,30 @@ async function seedData() {
   }
 }
 
-async function startServer() {
-  await seedData();
-  const app = express();
-  const PORT = 3000;
+export const app = express();
+const PORT = 3000;
 
-  app.use(express.json());
-  app.use(cookieParser());
+app.use(express.json());
+app.use(cookieParser());
 
-  // Auth Middleware
-  const authenticate = async (req: any, res: any, next: any) => {
-    const token = req.cookies.token;
-    if (!token) return res.status(401).json({ error: "Unauthorized" });
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
-      req.user = await User.findById(decoded.id);
-      next();
-    } catch (err) {
-      res.status(401).json({ error: "Invalid token" });
-    }
-  };
+// Health check for Vercel
+app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-  // Auth Routes
-  app.post("/api/auth/register", async (req, res) => {
+// Auth Middleware
+const authenticate = async (req: any, res: any, next: any) => {
+  const token = req.cookies.token;
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    req.user = await User.findById(decoded.id);
+    next();
+  } catch (err) {
+    res.status(401).json({ error: "Invalid token" });
+  }
+};
+
+// Auth Routes
+app.post("/api/auth/register", async (req, res) => {
     try {
       const { email, password, name } = req.body;
       const hashedPassword = await bcrypt.hash(password, 10);
@@ -343,13 +343,14 @@ async function startServer() {
   });
 
   // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -357,9 +358,14 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+// Only listen if not on Vercel
+if (!process.env.VERCEL) {
+  seedData().then(() => {
+    app.listen(3000, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:3000`);
+    });
+  }).catch(console.error);
+} else {
+  // On Vercel, we still want to ensure seeding happens (though it's better in a build step)
+  seedData().catch(console.error);
 }
-
-startServer();
