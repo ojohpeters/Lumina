@@ -64,8 +64,8 @@ const bookSchema = new mongoose.Schema({
   dueDate: { type: Date, default: null },
 });
 
-const User = mongoose.model("User", userSchema);
-const Book = mongoose.model("Book", bookSchema);
+const User = mongoose.models.User || mongoose.model("User", userSchema);
+const Book = mongoose.models.Book || mongoose.model("Book", bookSchema);
 
 // Seeding Logic
 async function seedData() {
@@ -217,17 +217,24 @@ const authenticate = async (req: any, res: any, next: any) => {
 app.post("/api/auth/register", async (req, res) => {
     try {
       const { email, password, name } = req.body;
+      if (!email || !password || !name) {
+        return res.status(400).json({ error: "Email, password, and name are required" });
+      }
       const hashedPassword = await bcrypt.hash(password, 10);
       const user = new User({ email, password: hashedPassword, name });
       await user.save();
       const token = jwt.sign({ id: user._id }, JWT_SECRET);
+      
+      const isProd = process.env.NODE_ENV === "production" || !!process.env.VERCEL;
+      
       res.cookie("token", token, { 
         httpOnly: true, 
-        secure: process.env.NODE_ENV === "production", 
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax" 
+        secure: isProd, 
+        sameSite: isProd ? "none" : "lax" 
       });
       res.json({ user: { id: user._id, email: user.email, name: user.name, role: user.role } });
     } catch (err: any) {
+      console.error("[AUTH] Register error:", err);
       res.status(400).json({ error: err.message });
     }
   });
@@ -235,6 +242,10 @@ app.post("/api/auth/register", async (req, res) => {
   app.post("/api/auth/login", async (req, res) => {
     try {
       const { email, password } = req.body;
+      if (!email || !password) {
+        return res.status(400).json({ error: "Email and password are required" });
+      }
+
       console.log(`[AUTH] Login attempt for: ${email}`);
       
       const user = await User.findOne({ email });
@@ -255,20 +266,31 @@ app.post("/api/auth/register", async (req, res) => {
 
       console.log(`[AUTH] Login successful for: ${email}`);
       const token = jwt.sign({ id: user._id }, JWT_SECRET);
+      
+      const isProd = process.env.NODE_ENV === "production" || !!process.env.VERCEL;
+      
       res.cookie("token", token, { 
         httpOnly: true, 
-        secure: process.env.NODE_ENV === "production", 
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax" 
+        secure: isProd, 
+        sameSite: isProd ? "none" : "lax" 
       });
       res.json({ user: { id: user._id, email: user.email, name: user.name, role: user.role } });
     } catch (err: any) {
       console.error("[AUTH] Login error:", err);
-      res.status(400).json({ error: err.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
   app.get("/api/auth/me", authenticate, (req: any, res) => {
-    res.json({ user: { id: req.user._id, email: req.user.email, name: req.user.name, role: req.user.role } });
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      res.json({ user: { id: req.user._id, email: req.user.email, name: req.user.name, role: req.user.role } });
+    } catch (err) {
+      console.error("[AUTH] Me error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   app.post("/api/auth/logout", (req, res) => {
@@ -321,14 +343,19 @@ app.post("/api/auth/register", async (req, res) => {
 
   // Borrowing Logic
   app.post("/api/books/:id/borrow", authenticate, async (req: any, res) => {
-    const book = await Book.findById(req.params.id);
-    if (!book || book.status === "borrowed") return res.status(400).json({ error: "Book unavailable" });
-    
-    book.status = "borrowed";
-    book.borrowedBy = req.user._id;
-    book.dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
-    await book.save();
-    res.json(book);
+    try {
+      const book = await Book.findById(req.params.id);
+      if (!book || book.status === "borrowed") return res.status(400).json({ error: "Book unavailable" });
+      
+      book.status = "borrowed";
+      book.borrowedBy = req.user._id;
+      book.dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
+      await book.save();
+      res.json(book);
+    } catch (err) {
+      console.error("[API] Borrow error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   app.post("/api/books/:id/return", authenticate, async (req: any, res) => {
