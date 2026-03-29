@@ -2,20 +2,45 @@ import express from "express";
 import path from "path";
 import mongoose from "mongoose";
 import cookieParser from "cookie-parser";
+import cors from "cors";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 
 dotenv.config();
 
+export const app = express();
+const PORT = 3000;
+
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json());
+app.use(cookieParser());
+
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/library";
 const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
 
 // MongoDB Connection
-console.log("Connecting to MongoDB at:", MONGODB_URI.replace(/:([^:@]+)@/, ":****@")); // Mask password
-mongoose.connect(MONGODB_URI)
-  .then(() => console.log("Connected to MongoDB successfully"))
-  .catch(err => console.error("MongoDB connection error:", err));
+const connectDB = async () => {
+  if (mongoose.connection.readyState >= 1) return;
+  console.log("Connecting to MongoDB...");
+  try {
+    await mongoose.connect(MONGODB_URI);
+    console.log("Connected to MongoDB successfully");
+  } catch (err) {
+    console.error("MongoDB connection error:", err);
+    throw err;
+  }
+};
+
+// Middleware to ensure DB connection
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    res.status(500).json({ error: "Database connection failed" });
+  }
+});
 
 // Schemas
 const userSchema = new mongoose.Schema({
@@ -47,13 +72,13 @@ async function seedData() {
     const bookCount = await Book.countDocuments();
     console.log(`[SEED] Current DB State: ${userCount} users, ${bookCount} books`);
     
-    // 1. Always ensure Admin exists and has correct password
+    // 1. Ensure Admin exists
     console.log("[SEED] Verifying Admin user...");
     const adminExists = await User.findOne({ email: "admin@lumina.com" });
-    const adminPassword = await bcrypt.hash("admin123", 10);
 
     if (!adminExists) {
       console.log("[SEED] Admin user missing. Creating admin...");
+      const adminPassword = await bcrypt.hash("admin123", 10);
       const admin = new User({
         email: "admin@lumina.com",
         password: adminPassword,
@@ -63,9 +88,7 @@ async function seedData() {
       await admin.save();
       console.log("[SEED] Admin created successfully.");
     } else {
-      console.log("[SEED] Admin exists. Resetting password to 'admin123' for consistency.");
-      await User.findOneAndUpdate({ email: "admin@lumina.com" }, { password: adminPassword });
-      console.log("[SEED] Admin password reset.");
+      console.log("[SEED] Admin already exists.");
     }
 
     // 2. Seed other users if empty
@@ -172,12 +195,6 @@ async function seedData() {
   }
 }
 
-export const app = express();
-const PORT = 3000;
-
-app.use(express.json());
-app.use(cookieParser());
-
 // Health check for Vercel
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
@@ -259,8 +276,18 @@ app.post("/api/auth/register", async (req, res) => {
 
   // Book Routes
   app.get("/api/books", async (req, res) => {
-    const books = await Book.find().populate("borrowedBy", "name email");
-    res.json(books);
+    try {
+      let books = await Book.find().populate("borrowedBy", "name email");
+      if (books.length === 0 && process.env.VERCEL) {
+        console.log("[API] No books found on Vercel. Triggering automatic seeding...");
+        await seedData();
+        books = await Book.find().populate("borrowedBy", "name email");
+      }
+      res.json(books);
+    } catch (err) {
+      console.error("[API] Error fetching books:", err);
+      res.status(500).json({ error: "Failed to fetch books" });
+    }
   });
 
   app.post("/api/books", authenticate, async (req: any, res) => {
@@ -360,12 +387,14 @@ app.post("/api/auth/register", async (req, res) => {
 
 // Only listen if not on Vercel
 if (!process.env.VERCEL) {
-  seedData().then(() => {
-    app.listen(3000, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:3000`);
+  connectDB().then(() => {
+    seedData().then(() => {
+      app.listen(3000, "0.0.0.0", () => {
+        console.log(`Server running on http://localhost:3000`);
+      });
     });
   }).catch(console.error);
 } else {
-  // On Vercel, we still want to ensure seeding happens (though it's better in a build step)
-  seedData().catch(console.error);
+  // On Vercel, we don't call seedData() at the top level to avoid cold start timeouts.
+  // The DB connection is handled by the middleware.
 }
